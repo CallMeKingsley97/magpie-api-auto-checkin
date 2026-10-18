@@ -71,6 +71,23 @@ export default {
       return asRecord(v) ?? {}
     }
 
+    /**
+     * 这个站点已经登记过的话，它在 auth 文件里的 key。
+     * 重新添加同一个站点（比如换了令牌）要改这一条，不能再开一条：
+     * 同一站点堆两条账号，签到列表里就会重复，还各自记一份签到状态。
+     */
+    function accountKeyForSite(site) {
+      const want = siteKeyOf(site)
+      if (!want) return ""
+      const all = readAuthFile()
+      for (const k of pluginAccountKeys(all)) {
+        const a = asRecord(all[k])
+        if (!isPluginAccountShape(a)) continue
+        if (siteKeyOf(String(a.metadata?.site ?? a.site ?? "")) === want) return k
+      }
+      return ""
+    }
+
     /** 本插件自己的账号（按 agent 名字或 site 找条目时用得到）。 */
     function pluginAccountKeys(all = readAuthFile()) {
       return Object.keys(all).filter((k) => k === PROVIDER_ID || k.startsWith(PROVIDER_ID + "#"))
@@ -117,6 +134,25 @@ export default {
         },
       }
       return saveAccountFile(key, body)
+    }
+
+    /**
+     * 一条账号记录 → 签到要用的凭据。
+     * 两条签到路径（magpie 每日自动的 checkin 钩子、手动 action=checkin）共用，
+     * 免得一边带上了邮箱密码、另一边没带，sub2api 令牌过期时表现不一样。
+     */
+    function credentialsOf(auth) {
+      const a = asRecord(auth) ?? {}
+      return {
+        key: String(a.key ?? "").trim(),
+        access: String(a.metadata?.access ?? a.access ?? "").trim(),
+        refresh: String(a.metadata?.refresh ?? a.refresh ?? "").trim(),
+        expires: Number(a.metadata?.expires ?? a.expires) || 0,
+        // sub2api 用邮箱密码登录的账号：留一份密码，令牌过期时能自动重新登录
+        email: String(a.metadata?.email ?? "").trim(),
+        password: String(a.metadata?.password ?? ""),
+        site: String(a.site ?? a.metadata?.site ?? "").trim(),
+      }
     }
 
     /**
@@ -221,7 +257,7 @@ export default {
         }
         if (probe.error) return { ok: false, message: `${siteLabel(root)} 连不上：${probe.error}` }
         const label = name || accountLabelFromProbe(probe, root)
-        const key = accountKeyFor()
+        const key = accountKeyForSite(root) || accountKeyFor()
         const body = {
           type: "api",
           key: String(token).trim(),
@@ -251,7 +287,7 @@ export default {
       try {
         const tokens = await loginSub2Api(root, { email, password })
         const label = name || tokens.accountId || siteLabel(root)
-        const key = accountKeyFor()
+        const key = accountKeyForSite(root) || accountKeyFor()
         const body = {
           type: "api",
           key: tokens.access,
@@ -296,28 +332,22 @@ export default {
       if (!site) {
         return { outcome: "failed", message: "这个账号里没记站点地址，请移除后重新添加" }
       }
-      const cred = {
-        key: String(auth.key ?? "").trim(),
-        access: String(auth.metadata?.access ?? auth.access ?? "").trim(),
-        refresh: String(auth.metadata?.refresh ?? auth.refresh ?? "").trim(),
-        expires: Number(auth.metadata?.expires ?? auth.expires) || 0,
-        // sub2api 用邮箱密码登录的账号：留一份密码，令牌过期时能自动重新登录
-        email: String(auth.metadata?.email ?? "").trim(),
-        password: String(auth.metadata?.password ?? ""),
-        site,
-      }
+      const cred = credentialsOf(auth)
       if (!cred.key && !cred.access) {
         return { outcome: "failed", message: `${siteLabel(site)} 的账号没有令牌，请重新添加` }
       }
       // 续期/重登后的新令牌写回这个账号在 auth 文件里的那一条（按 accountId 反查）
       const fileKey = accountKeyOf(auth) || accountId
+      // 签到状态记在 auth 文件的那个 key 上：手动签到（checkinAll）也写同一处，
+      // 两边都按它读，usage 卡片才不会说“今天没签”而其实签过了
+      const stateKey = fileKey || accountId
       try {
         const result = await checkinSite(site, cred, { save: (c) => saveAuthUpdate(fileKey, c) })
-        recordResult(directory, accountId, result)
+        recordResult(directory, stateKey, result)
         return result
       } catch (e) {
         const message = `${siteLabel(site)}：${e?.message ?? e}`
-        recordResult(directory, accountId, { outcome: "failed", message })
+        recordResult(directory, stateKey, { outcome: "failed", message })
         return { outcome: "failed", message }
       }
     }
@@ -336,20 +366,10 @@ export default {
         }
         let result
         try {
-          result = await checkinSite(
-            site,
-            {
-              key: String(a.auth.key ?? "").trim(),
-              access: String(a.auth.metadata?.access ?? "").trim(),
-              refresh: String(a.auth.metadata?.refresh ?? "").trim(),
-              expires: Number(a.auth.metadata?.expires) || 0,
-              site,
-            },
-            {
-              fetchImpl,
-              save: (c) => saveAuthUpdate(a.key, c),
-            },
-          )
+          result = await checkinSite(site, credentialsOf(a.auth), {
+            fetchImpl,
+            save: (c) => saveAuthUpdate(a.key, c),
+          })
         } catch (e) {
           result = { outcome: "failed", message: `${siteLabel(site)}：${e?.message ?? e}` }
         }
@@ -378,8 +398,8 @@ export default {
 
     /**
      * 把用量/余额/今天签到状态整理成一张卡片该有的样子。
-     * magpie 调这个钩子时不给账号名，所以先读一次凭据：accountId 用来查
-     * state.json 里的签到记录（两边是同一个名字），顺便省掉一次重复读取。
+     * magpie 调这个钩子时不给账号名，所以先读一次凭据：按它在 auth 文件里的
+     * key 查 state.json 里的签到记录（签到那边也写这个 key），顺便省掉一次重复读取。
      */
     async function usageCard(getAuth) {
       let auth
@@ -388,8 +408,8 @@ export default {
       } catch {
         auth = {}
       }
-      const key = String(auth.accountId ?? auth.metadata?.name ?? "").trim()
       const fileKey = accountKeyOf(auth)
+      const key = fileKey || String(auth.accountId ?? auth.metadata?.name ?? "").trim()
       return usageFor(getAuth, { directory, accountId: key, auth, save: (c) => saveAuthUpdate(fileKey, c) })
     }
 
