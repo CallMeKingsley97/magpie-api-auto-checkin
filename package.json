@@ -1,5 +1,5 @@
 {
-  "name": "magpie-plugin-auto-checkin",
+  "name": "opencode-auto-checkin",
   "version": "0.1.0",
   "description": "签到管家（Auto Check-in）：把 magpie 里每一个 new-api / sub2api 中转站都签一遍，签到不了的站点逐条说明原因",
   "type": "module",
