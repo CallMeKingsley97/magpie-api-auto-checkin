@@ -6,13 +6,13 @@ magpie 插件：把你在 magpie 里配置过的 new-api / sub2api 中转站每�
 ## 装
 
 ```sh
-magpie plugin add github:CallMeKingsley97/magpie-plugins
+magpie plugin add github:CallMeKingsley97/magpie-api-auto-checkin
 ```
 
 或者把仓库克隆下来，用本地路径装：
 
 ```sh
-magpie plugin add /path/to/magpie-plugins
+magpie plugin add /path/to/magpie-api-auto-checkin
 ```
 
 装好后在 magpie 的 Providers 里会多出一个「签到管家」，每个站点的账号都挂在它下面。
@@ -23,7 +23,7 @@ magpie plugin add /path/to/magpie-plugins
 
 你已经在 magpie 里配过的站点，凭据（那条 provider 的 key）直接拿来用：
 
-> 对 agent 说：“把没导入的站点导入签到管家”，或者让它调用 `auto-checkin_manage_checkin`，`action=import`。
+> 对 agent 说：“把没导入的站点导入签到管家”，或者让它调用 `magpie-api-auto-checkin_manage_checkin`，`action=import`。
 
 导入时会顺手认站点类型：能认出来的会记下是 new-api 还是 sub2api；认不出来的也会导进来，等第一次签到再认。
 
@@ -51,7 +51,7 @@ magpie 对插件自己的签到**默认是关的**，要手动开一次，之后
 magpie accounts checkin
 ```
 
-或让 agent 调 `auto-checkin_manage_checkin`，`action=checkin`。结果在：
+或让 agent 调 `magpie-api-auto-checkin_manage_checkin`，`action=checkin`。结果在：
 
 - Usage 卡片（每个账号显示站点、类型、余额、今天签没签、拿了多少）
 - Settings → Usage（每个账号最近一次签到结果）
