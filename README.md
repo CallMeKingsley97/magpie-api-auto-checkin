@@ -37,9 +37,15 @@ Providers → 签到管家 → 「登录」里有三种方式：
 | **sub2api 邮箱密码** | sub2api 站点。插件会登录并把邮箱密码留在账号里，令牌过期时自动重新登录 |
 | **sub2api 手动导入令牌** | 不想存密码时：从浏览器里复制登录后的 access token 填进来 |
 
-### 3. 签到
+### 3. 打开每日自动签到（重要）
 
-装好后 magpie 会**每天自动**给每个账号签一次（按北京时间算日界）。手动触发：
+magpie 对插件自己的签到**默认是关的**，要手动开一次，之后才会每天自动跑：
+
+> Settings → Usage → 找到「签到管家」→ 把它的签到开关打开。
+
+打开后 magpie 每天给每个账号签一次（按北京时间算日界）；当天失败的话，晚些还会再试一次。
+
+不想开自动也行，随时手动签：
 
 ```sh
 magpie accounts checkin
@@ -48,7 +54,7 @@ magpie accounts checkin
 或让 agent 调 `auto-checkin_manage_checkin`，`action=checkin`。结果在：
 
 - Usage 卡片（每个账号显示站点、类型、余额、今天签没签、拿了多少）
-- Settings → Usage → Plugins（默认关，打开后能看到每次签到结果）
+- Settings → Usage（每个账号最近一次签到结果）
 - `magpie accounts checkin` 的输出
 
 ## 结果怎么看
@@ -85,9 +91,11 @@ magpie accounts checkin
 
 ## 已知限制
 
+- **每日自动签到默认是关的**，要在 Settings → Usage 里给「签到管家」打开（见上）。
 - 签到日界按北京时间（Asia/Shanghai），站点用自己的时区的会略有出入。
 - new-api 的「旧式令牌」如果被站点退役了，需要去站点建带 wallet 权限的新令牌。
 - 站点开了人机验证的签到必须手动做一次，插件不做绕过。
+- 一个站点记一个账号。同一个站点想签多个账号，暂时得分开装一份插件。
 
 ## 开发
 
