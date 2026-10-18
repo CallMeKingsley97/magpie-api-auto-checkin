@@ -1,0 +1,45 @@
+{
+  "name": "magpie-plugin-auto-checkin",
+  "version": "0.1.0",
+  "description": "签到管家（Auto Check-in）：把 magpie 里每一个 new-api / sub2api 中转站都签一遍，签到不了的站点逐条说明原因",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "lib/core.mjs",
+    "lib/store.mjs",
+    "lib/checkin.mjs",
+    "lib/usage.mjs",
+    "tests/helpers.mjs",
+    "tests/new-api.test.mjs",
+    "tests/sub2api.test.mjs",
+    "tests/store.test.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "magpie-plugin",
+    "auth",
+    "provider",
+    "checkin",
+    "签到",
+    "new-api",
+    "sub2api"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CallMeKingsley97/magpie-plugins",
+    "directory": "packages/auto-checkin"
+  },
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\""
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjJhYTU1IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTggM2g4Ii8+PHBhdGggZD0iTTEyIDN2MyIvPjxwYXRoIGQ9Ik0xMiA2Yy0zLjMgMC02IDIuNy02IDZ2NWgxMlYxMmMwLTMuMy0yLjctNi02LTZ6Ii8+PHBhdGggZD0iTTE4IDE3djJhMiAyIDAgMCAxLTIgMkg4YTIgMiAwIDAgMS0yLTJ2LTIiLz48L3N2Zz4=",
+    "maxConcurrency": 1
+  }
+}
