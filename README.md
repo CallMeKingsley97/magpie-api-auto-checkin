@@ -41,7 +41,11 @@ Providers → 签到管家 → 「登录」里有三种方式：
 
 magpie 对插件自己的签到**默认是关的**，要手动开一次，之后才会每天自动跑：
 
-> Settings → Usage → 找到「签到管家」→ 把它的签到开关打开。
+> Settings → Usage → 「Plugins」标签 → 找到「签到管家 · Daily check-in」→ 打开。
+
+**这个开关只有在你至少加了一个站点之后才会出现。** magpie 在插件一个账号都没有时，
+会把整个「Plugins」标签藏起来（`pluginCheckinProviders()` 要求 `len(accounts) > 0`），
+所以「找不到签到管家」通常意味着还没加站点，不是插件没装上。
 
 打开后 magpie 每天给每个账号签一次（按北京时间算日界）；当天失败的话，晚些还会再试一次。
 
@@ -92,6 +96,7 @@ magpie accounts checkin
 ## 已知限制
 
 - **每日自动签到默认是关的**，要在 Settings → Usage 里给「签到管家」打开（见上）。
+- **Settings → Usage 里看不到「Plugins」标签，是因为还没有账号。** 先加一个站点，标签才会出现。
 - 签到日界按北京时间（Asia/Shanghai），站点用自己的时区的会略有出入。
 - new-api 的「旧式令牌」如果被站点退役了，需要去站点建带 wallet 权限的新令牌。
 - 站点开了人机验证的签到必须手动做一次，插件不做绕过。
