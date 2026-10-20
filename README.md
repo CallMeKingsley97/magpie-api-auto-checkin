@@ -35,7 +35,7 @@ Providers → 签到管家 → 「登录」里有三种方式：
 | --- | --- |
 | **new-api 访问令牌** | new-api 站点。去站点的「设置 → 访问令牌」建一个，这个令牌长期有效，签到不会失效 |
 | **sub2api 邮箱密码** | sub2api 站点。插件会登录并把邮箱密码留在账号里，令牌过期时自动重新登录 |
-| **sub2api 手动导入令牌** | 不想存密码时：从浏览器里复制登录后的 access token 填进来 |
+| **sub2api 登录令牌** | 不想存密码时：从浏览器里复制登录后的 access token 填进来 |
 
 ### 3. 打开每日自动签到（重要）
 
@@ -65,14 +65,26 @@ magpie accounts checkin
 
 每次签到都是这几种结果之一，说人话：
 
+| 当天的签到结果 | 三种地方都看得到，说法一致 |
+| --- | --- |
+| Usage 卡片 | magpie 在账号卡片下面画一行：已签 / 已签 +N / 未开始 / 无资格 / 要验证码 / 失败（带原因） |
+| Settings → Usage → Plugins | 每个账号最近一次签到结果 |
+| `magpie accounts checkin` | 逐条打印，结尾一行汇总 |
+
+卡片本身只放站点类型、账号和余额，不再把签到细节堆成一句话；签到结果交给 magpie 自己的签到行，两边不会重复，也不会互相矛盾。卡片右上角的「Auto check-in」开关就是每日自动签到，和 Settings → Usage 里那个是同一个。
+
+## 结果怎么看
+
+每次签到都是这几种结果之一，说人话：
+
 | 结果 | 意思 | 你要做什么 |
 | --- | --- | --- |
-| ✅ 签到成功 | 拿到了奖励 | 不用管 |
-| ☑️ 今日已签到 | 今天早签过了，不重复领 | 不用管 |
-| ⏸️ 没开启签到 | 站点管理员把签到功能关了 | 等站长开，或者不用管 |
-| ⛔ 无资格 | 站点说这个账号暂时不能签（门槛没到、被封了之类） | 看提示里的原因 |
-| 🛡️ 要人机验证 | 站点开了 Turnstile 之类，插件不破解验证码 | 到站点网页手动签一次 |
-| ❌ 失败 | 见下面的具体原因 | 见下 |
+| 签到成功 | 拿到了奖励（magpie 会显示 +N） | 不用管 |
+| 今日已签到 | 今天早签过了，不重复领 | 不用管 |
+| 没开启签到 | 站点管理员把签到功能关了 | 等站长开，或者不用管 |
+| 无资格 | 站点说这个账号暂时不能签（门槛没到、被封了之类） | 看提示里的原因 |
+| 要人机验证 | 站点开了 Turnstile 之类，插件不破解验证码 | 到站点网页手动签一次 |
+| 失败 | 见下面的具体原因 | 见下 |
 
 失败的常见原因，插件会直接写清：
 
@@ -83,8 +95,44 @@ magpie accounts checkin
 
 ## 支持的站点
 
-- **new-api**（及其分支）：`/api/status` + `/api/user/checkin`。认证用访问令牌（长期有效）。
-- **sub2api**（及其分支）：登录 + 一批分支站的签到接口（Sub2API Pro、FreeAPI、Hiyo、ToolCode、Daigua、Genius Programmer、Clawhud、Sidrune、小白Code）。认不出的分支站会如实说“没适配”，不会乱试。
+### new-api 及其分支
+
+| 分支 | 签到接口 | 怎么认出来 |
+| --- | --- | --- |
+| **new-api**（官方） | `POST /api/user/checkin`，状态 `GET /api/user/checkin?month=YYYY-MM` | `/api/status` 里有 `checkin_enabled` |
+| **Veloera** | `POST /api/user/check_in`，状态 `GET /api/user/check_in_status` | `/api/status` 里有 `check_in_enabled` |
+| **Rix API** 等 | 同官方 | `/api/status` 里有 `enable_checkin` |
+| **WONG 公益站** 等 | 同官方，状态里用 `checked_in` 表示今天签过 | 命中官方接口的报文形状 |
+
+认证统一用访问令牌（长期有效）。
+
+### sub2api 及其分支
+
+登录方式都一样（`/api/v1/auth/login`），签到接口各有各的路径和字段：
+
+| 分支 | 状态接口 | 签到接口 |
+| --- | --- | --- |
+| **Sub2API Pro** | `/api/v1/redeem/checkin/status` | `/api/v1/redeem/checkin` |
+| **FreeAPI** | `/api/v1/user/checkin?timezone=…` | 同一路径 POST |
+| **Hiyo** | `/api/v1/checkin?timezone=…` | `/api/v1/checkin` |
+| **ToolCode** | `/api/v1/engagement/checkin/status` | `/api/v1/engagement/checkin` |
+| **Daigua** | `/api/v1/checkin/status` | `/api/v1/checkin` |
+| **Genius Programmer** | `/api/v1/user/checkin/status`（`today_checked_in`） | `/api/v1/user/checkin` |
+| **Clawhud** | `/api/v1/user/checkin/status`（`checked_in_today`） | `/api/v1/user/checkin` |
+| **Sidrune** | `/api/v1/welfare/profile` | `/api/v1/welfare/checkin` |
+| **Denxio** | `/api/v1/tbe-sponsor-checkin/status` | `normal/begin` → 等待 → `normal/claim`（两段式） |
+| **AI-ROUTER** | `/api/v1/user/daily-checkin?timezone=…` | 同一路径 POST |
+| **小白Code** | `/checkin/api/status` | `/checkin/api/checkin` |
+
+几个容易搞错的地方，插件都按协议处理了：
+
+- **Genius Programmer 和 Clawhud 共用状态路径**，字段名只差一个（`today_checked_in` / `checked_in_today`）。插件按完整报文指纹区分，不会把一家的签到发到另一家的接口上。
+- **重复签到优先看 `reason` 码**（`DAILY_CHECKIN_ALREADY_DONE`、`CHECKIN_ALREADY_DONE`、`CHECKIN_ALREADY_COMPLETED`、`DAILY_CHECKIN_CLAIMED` 等），不依赖站点自定义的中文文案。
+- **“管理员关了”“今天不能签”“没资格”分开报**：`admin_disabled` / `DAILY_CHECKIN_DISABLED` 是管理员关；`eligible=false`、`tokens_met=false`、`can_checkin=false` 是账号或这一轮的条件不够；只有站点的每日开关真的关了才说“没开启签到”。
+- **POST 请求体按站点原生行为发**：Hiyo / Daigua / 小白Code 发空对象 `{}`，其余分支裸 POST（不带 body）。
+- **失败后会回读一次状态**：请求到了但响应丢了的情况，如实报“今日已签到”，不制造一次假失败。
+
+认不出的分支站会如实说“没适配”，不会乱试。
 
 ## 边界与隐私
 

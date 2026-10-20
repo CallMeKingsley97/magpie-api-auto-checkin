@@ -103,7 +103,7 @@ test("Sub2API Pro：POST 回 409 DAILY_CHECKIN_ALREADY_DONE → done", async () 
   assert.equal(r.outcome, "done")
 })
 
-test("FreeAPI：状态接口 + 带时区的 POST", async () => {
+test("FreeAPI：状态接口 + 签到 POST", async () => {
   const f = fakeFetch([
     publicSettings,
     {
@@ -111,15 +111,18 @@ test("FreeAPI：状态接口 + 带时区的 POST", async () => {
       body: envelope({ enabled: true, checked_in_today: false, min_amount: 10, max_amount: 20 }),
     },
     {
-      match: (url, init) => url.includes("/api/v1/user/checkin?timezone=") && init?.method === "POST",
+      match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST",
       body: envelope({ amount: 15 }),
     },
   ])
   const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
   assert.equal(r.outcome, "claimed")
   assert.equal(r.credit, 15)
+  // 时区跟着站点前端只加在 GET 上；POST 用站点原生的干净路径
+  const get = f.calls.find((c) => c.method === "GET" && c.path.startsWith("/api/v1/user/checkin"))
+  assert.match(decodeURIComponent(get.url), /timezone=Asia\/Shanghai/)
   const post = f.calls.find((c) => c.method === "POST")
-  assert.match(post.url, /timezone=Asia\/Shanghai/)
+  assert.equal(post.path, "/api/v1/user/checkin")
 })
 
 test("Hiyo：daily_claimed 已签 → done，不重复 claim", async () => {
@@ -241,4 +244,261 @@ test("刷新：令牌还早，不发刷新请求", async () => {
   const { renewed } = await refreshSub2ApiAuth(auth, { fetchImpl: f })
   assert.equal(renewed, false)
   assert.equal(f.calls.length, 0)
+})
+
+// ---- 共用的 /api/v1/user/checkin/status 路径 ----------------------------------
+//
+// Genius Programmer 和 Clawhud 读同一个路径，只有字段名不同。认错了就会把
+// A 家的签到发到 B 家的接口上，所以这两条必须分开认。
+
+test("Genius / Clawhud 共用状态路径：today_checked_in 归 Genius", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    {
+      match: (url, init) => url.includes("/api/v1/user/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
+      body: envelope({ enabled: true, today_checked_in: false, recent_records: [] }),
+    },
+    { match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST", body: envelope({ new_reward: true, reward_amount: 2.5 }) },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "claimed")
+  assert.equal(r.credit, 2.5)
+})
+
+test("Genius / Clawhud 共用状态路径：checked_in_today + total_count 归 Clawhud", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    {
+      match: (url, init) => url.includes("/api/v1/user/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
+      body: envelope({ enabled: true, checked_in_today: false, total_count: 9, total_amount: 30 }),
+    },
+    { match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST", body: envelope({ checked_in_today: true, today_amount: 0.8 }) },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "claimed")
+  assert.equal(r.credit, 0.8)
+})
+
+test("Clawhud：重复签到回 409 + CHECKIN_ALREADY_DONE → done（不靠文案）", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    {
+      match: (url, init) => url.includes("/api/v1/user/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
+      body: envelope({ enabled: true, checked_in_today: false, total_count: 9, total_amount: 30 }),
+    },
+    {
+      match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST",
+      status: 409,
+      body: { code: 409, message: "duplicate", reason: "CHECKIN_ALREADY_DONE" },
+    },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "done")
+})
+
+test("Genius：new_reward=false 的成功回包也算“今天已签”，不重复算奖励", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    {
+      match: (url, init) => url.includes("/api/v1/user/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
+      body: envelope({ enabled: true, today_checked_in: false, recent_records: [] }),
+    },
+    { match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST", body: envelope({ new_reward: false }) },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "done")
+})
+
+// ---- Daigua / Sidrune ------------------------------------------------------
+
+test("Daigua：admin_disabled 是管理员关了，不是“今天签过”", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    {
+      match: (url) => url.includes("/api/v1/checkin/status"),
+      body: envelope({ enabled: false, can_checkin: false, luck_enabled: false, unavailable_reason: "admin_disabled" }),
+    },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "inactive")
+  assert.match(r.message, /没有开启签到/)
+})
+
+test("Daigua：签到成功，POST 发空对象（原生页面就是空 body）", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    { match: (url) => url.includes("/api/v1/checkin/status"), body: envelope({ enabled: true, can_checkin: true, luck_enabled: false }) },
+    { match: (url, init) => url.endsWith("/api/v1/checkin") && init?.method === "POST", body: envelope({ checkin_type: "normal", reward_amount: 1.2 }) },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "claimed")
+  assert.equal(r.credit, 1.2)
+  const post = f.calls.find((c) => c.method === "POST" && c.path === "/api/v1/checkin")
+  assert.equal(post.body, "{}")
+})
+
+test("Sidrune：eligible=false 是没资格，不是签到关了", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    { match: (url) => url.includes("/api/v1/welfare/profile"), body: envelope({ enabled: true, eligible: false, checked_in_today: false }) },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "ineligible")
+})
+
+test("Sidrune：站点级开关关了优先报“管理员关了”，不往资格上猜", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    { match: (url) => url.includes("/api/v1/welfare/profile"), body: envelope({ enabled: false, eligible: false, checked_in_today: false }) },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "inactive")
+  assert.match(r.message, /没有开启签到/)
+})
+
+test("Sidrune：签到带上连续天数和里程碑奖励", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    { match: (url) => url.includes("/api/v1/welfare/profile"), body: envelope({ enabled: true, eligible: true, checked_in_today: false }) },
+    { match: (url, init) => url.endsWith("/api/v1/welfare/checkin") && init?.method === "POST", body: envelope({ reward_amount: 0.5, milestone_bonus: 1, streak_day: 7 }) },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "claimed")
+  assert.equal(r.credit, 0.5)
+  assert.equal(r.streak, 7)
+})
+
+// ---- 两套独立协议 -----------------------------------------------------------
+
+test("Denxio：begin → 等待 → claim 两段式签到", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    { match: (url) => url.includes("/api/v1/tbe-sponsor-checkin/status"), body: envelope({ normal_done: false, config: { normal_checkin_enabled: true } }) },
+    {
+      match: (url, init) => url.includes("/api/v1/tbe-sponsor-checkin/normal/begin") && init?.method === "POST",
+      body: envelope({ token: "challenge-1", wait_seconds: 0 }),
+    },
+    {
+      match: (url, init) => url.endsWith("/api/v1/tbe-sponsor-checkin/normal/claim") && init?.method === "POST",
+      body: envelope({ record: { amount: 0.3 } }),
+    },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "claimed")
+  assert.equal(r.credit, 0.3)
+  const claim = f.calls.find((c) => c.path.endsWith("/normal/claim"))
+  assert.equal(JSON.parse(claim.body).token, "challenge-1")
+})
+
+test("Denxio：重复领取的 reason 码 → done", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    { match: (url) => url.includes("/api/v1/tbe-sponsor-checkin/status"), body: envelope({ normal_done: false, config: { normal_checkin_enabled: true } }) },
+    { match: (url, init) => url.includes("/normal/begin") && init?.method === "POST", body: envelope({ token: "c1", wait_seconds: 0 }) },
+    {
+      match: (url, init) => url.endsWith("/normal/claim") && init?.method === "POST",
+      status: 409,
+      body: { code: 409, message: "done", reason: "TBE_SPONSOR_CHECKIN_ALREADY_DONE" },
+    },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "done")
+})
+
+test("Denxio：管理员关掉（normal_checkin_enabled=false）→ inactive", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    { match: (url) => url.includes("/api/v1/tbe-sponsor-checkin/status"), body: envelope({ normal_done: false, config: { normal_checkin_enabled: false } }) },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "inactive")
+})
+
+test("AI-ROUTER：/api/v1/user/daily-checkin 一条路径读和领", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    {
+      match: (url, init) => url.includes("/api/v1/user/daily-checkin") && String(init?.method ?? "GET").toUpperCase() === "GET",
+      body: envelope({ enabled: true, checked_today: false, eligible: true }),
+    },
+    {
+      match: (url, init) => url.endsWith("/api/v1/user/daily-checkin") && init?.method === "POST",
+      body: envelope({ checked_today: true, reward_amount: 0.05 }),
+    },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "claimed")
+  assert.equal(r.credit, 0.05)
+})
+
+test("AI-ROUTER：没资格（eligible=false）就不发领取请求", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    {
+      match: (url, init) => url.includes("/api/v1/user/daily-checkin") && String(init?.method ?? "GET").toUpperCase() === "GET",
+      body: envelope({ enabled: true, checked_today: false, eligible: false }),
+    },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  // 站点开着签到，但账号没到门槛：这是“没资格”，不是“管理员关了”
+  assert.equal(r.outcome, "ineligible")
+  assert.equal(countCalls(f, "/api/v1/user/daily-checkin"), 1)
+})
+
+test("AI-ROUTER：重复领取 409 DAILY_CHECKIN_CLAIMED → done", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    {
+      match: (url, init) => url.includes("/api/v1/user/daily-checkin") && String(init?.method ?? "GET").toUpperCase() === "GET",
+      body: envelope({ enabled: true, checked_today: false, eligible: true }),
+    },
+    {
+      match: (url, init) => url.endsWith("/api/v1/user/daily-checkin") && init?.method === "POST",
+      status: 409,
+      body: { code: 409, message: "claimed", reason: "DAILY_CHECKIN_CLAIMED" },
+    },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "done")
+})
+
+// ---- 失败后回读 -------------------------------------------------------------
+
+test("签到 POST 回了个看不懂的错误，但回读状态已经签上了 → 如实报 done", async () => {
+  let statusCalls = 0
+  const f = fakeFetch([
+    publicSettings,
+    {
+      // 第一次读：没签；POST 之后再读：已签
+      match: (url, init) => url.includes("/api/v1/redeem/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
+      respond: () => ({
+        body: envelope({ enabled: true, checked_in_today: statusCalls++ > 0, reward_min: 1, reward_max: 2 }),
+      }),
+    },
+    {
+      match: (url, init) => url.endsWith("/api/v1/redeem/checkin") && init?.method === "POST",
+      status: 502,
+      text: "<html>bad gateway</html>",
+    },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "done")
+})
+
+test("FreeAPI 这类分支：HTTP 200 但 code 是字符串 UNAUTHORIZED → 按失败处理", async () => {
+  const f = fakeFetch([
+    publicSettings,
+    {
+      match: (url, init) => url.includes("/api/v1/user/checkin?timezone=") && String(init?.method ?? "GET").toUpperCase() === "GET",
+      body: envelope({ enabled: true, checked_in_today: false, min_amount: 1, max_amount: 2 }),
+    },
+    {
+      match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST",
+      // 传输级失败时站点把 code 换成字符串，HTTP 仍是 200
+      body: { code: "UNAUTHORIZED", message: "未登录", reason: "UNAUTHORIZED" },
+    },
+  ])
+  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
+  assert.equal(r.outcome, "failed")
+  assert.match(r.message, /登录态|未登录/)
 })

@@ -379,27 +379,43 @@ export default {
       return results
     }
 
+    // CLI / 工具输出里用 magpie 自己的符号习惯（↻、× 这类），不用 emoji：
+    // 终端字体和等宽表格里 emoji 会把行高撑开。
     function resultLine(r) {
       const label = r.name || siteLabel(r.site) || r.account
-      const icon = { claimed: "✅", done: "☑️", inactive: "⏸️", ineligible: "⛔", captcha: "🛡️", failed: "❌" }[r.outcome] ?? "•"
-      const credit = r.credit ? `（+${r.credit}）` : ""
-      return `${icon} ${label}：${r.message || r.outcome}${credit}`
+      const mark = { claimed: "✓", done: "✓", inactive: "·", ineligible: "·", captcha: "!", failed: "✕" }[r.outcome] ?? "·"
+      const credit =
+        typeof r.credit === "number" && r.credit > 0 && !String(r.message ?? "").includes(String(r.credit))
+          ? `（+${r.credit}）`
+          : ""
+      return `${mark} ${label}：${r.message || r.outcome}${credit}`
     }
 
     function reportText(results) {
       if (!results.length) {
         return "签到管家还没有任何账号。先在 Providers 里点「签到管家」添加站点，或让我执行「一键导入 Provider」把现有的中转站都搬进来。"
       }
-      const counts = { claimed: 0, done: 0, inactive: 0, ineligible: 0, captcha: 0, failed: 0 }
-      for (const r of results) counts[r.outcome] = (counts[r.outcome] ?? 0) + 1
-      const head = `共 ${results.length} 个站点：签到成功 ${counts.claimed}，今日已签 ${counts.done}，未开启 ${counts.inactive}，无资格 ${counts.ineligible}，要验证码 ${counts.captcha}，失败 ${counts.failed}`
-      return [head, ...results.map(resultLine)].join("\n")
+      const named = [
+        ["claimed", "签到成功"],
+        ["done", "今日已签"],
+        ["inactive", "未开启"],
+        ["ineligible", "无资格"],
+        ["captcha", "要验证码"],
+        ["failed", "失败"],
+      ]
+      const counts = new Map()
+      for (const r of results) counts.set(r.outcome, (counts.get(r.outcome) ?? 0) + 1)
+      const parts = named.filter(([k]) => counts.get(k)).map(([k, name]) => `${name} ${counts.get(k)}`)
+      // 出现表里没有的 outcome 也照实报，不悄悄吞掉
+      for (const [k, n] of counts) if (!named.some(([known]) => known === k)) parts.push(`${k} ${n}`)
+      return [`共 ${results.length} 个站点：${parts.join("，")}`, ...results.map(resultLine)].join("\n")
     }
 
     /**
-     * 把用量/余额/今天签到状态整理成一张卡片该有的样子。
-     * magpie 调这个钩子时不给账号名，所以先读一次凭据：按它在 auth 文件里的
-     * key 查 state.json 里的签到记录（签到那边也写这个 key），顺便省掉一次重复读取。
+     * 把用量/余额整理成一张卡片：站点类型 + 账号 + 余额。
+     * 今天签没签不在这里重复——magpie 会用同一个账号的 plugin-checkin
+     * 记录在卡片下面画签到行。这里先读一次凭据，按它在 auth 文件里的 key
+     * 查 state.json 里用户给站点起的名字。
      */
     async function usageCard(getAuth) {
       let auth
@@ -522,13 +538,15 @@ export default {
       auth: {
         provider: PROVIDER_ID,
         label: PROVIDER_NAME,
-        icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjJhYTU1IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTggM2g4Ii8+PHBhdGggZD0iTTEyIDN2MyIvPjxwYXRoIGQ9Ik0xMiA2Yy0zLjMgMC02IDIuNy02IDZ2NWgxMlYxMmMwLTMuMy0yLjctNi02LTZ6Ii8+PHBhdGggZD0iTTE4IDE3djJhMiAyIDAgMCAxLTIgMkg4YTIgMiAwIDAgMS0yLTJ2LTIiLz48L3N2Zz4=",
+        // 日历打勾的线稿图标（24×24、圆角端点），颜色在浅色和深色卡片上都够亮；
+        // magpie 把它当图片画，不能用 currentColor
+        icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMTZhMzRhIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHJlY3QgeD0iMy41IiB5PSI0LjUiIHdpZHRoPSIxNyIgaGVpZ2h0PSIxNiIgcng9IjMiLz48cGF0aCBkPSJNOCAyLjV2NE0xNiAyLjV2NE0zLjUgOS41aDE3Ii8+PHBhdGggZD0ibTggMTQuOCAyLjYgMi42IDUuMi01LjQiLz48L3N2Zz4=",
         options: [
           {
             key: OPTION_KEYS.showProviderScan,
-            label: "启动时扫描 magpie 里的其它 Provider",
+            label: "启动时检查其它 Provider",
             description:
-              "开启后，插件启动时会看看 providers.json / plugin-providers.json 里有没有还没加入签到管家的站点，并在日志里提一句（只看地址，不动凭据）。",
+              "启动时看一眼 providers.json 里还有哪些站点没加进来，在日志里提一句。只读地址，不碰凭据；这个开关本身不会导入任何东西。",
             default: false,
           },
         ],
@@ -536,22 +554,22 @@ export default {
         methods: [
           {
             type: "api",
-            label: "new-api 访问令牌（站点 + 访问令牌，登录几乎不会失效）",
+            label: "new-api 访问令牌",
             prompts: [
               {
                 type: "text",
                 key: "site",
-                message: "站点地址（例如 https://example.com，填站点首页就行）",
+                message: "站点地址",
                 placeholder: "https://example.com",
-                validate: (v) => (siteRootOf(v) ? undefined : "这不像一个网址"),
+                validate: (v) => (siteRootOf(v) ? undefined : "请填完整网址，例如 https://example.com"),
               },
               {
                 type: "password",
                 key: "token",
-                message: "访问令牌（在站点的「设置 → 访问令牌」里创建；旧式令牌和新的 nap_ 令牌都行）",
-                placeholder: "粘贴访问令牌",
+                message: "访问令牌（站点 → 设置 → 访问令牌）",
+                placeholder: "粘贴访问令牌；旧式令牌和 nap_ 令牌都行",
               },
-              { type: "text", key: "name", message: "给它起个名字（留空就用域名）", placeholder: "可选" },
+              { type: "text", key: "name", message: "备注名（留空用域名）", placeholder: "可选" },
             ],
             async authorize(inputs = {}) {
               const site = siteRootOf(inputs.site)
@@ -595,18 +613,18 @@ export default {
           },
           {
             type: "api",
-            label: "sub2api 邮箱密码登录（站点 + 邮箱 + 密码）",
+            label: "sub2api 邮箱密码",
             prompts: [
               {
                 type: "text",
                 key: "site",
-                message: "站点地址（例如 https://example.com，填站点首页就行）",
+                message: "站点地址",
                 placeholder: "https://example.com",
-                validate: (v) => (siteRootOf(v) ? undefined : "这不像一个网址"),
+                validate: (v) => (siteRootOf(v) ? undefined : "请填完整网址，例如 https://example.com"),
               },
               { type: "text", key: "email", message: "登录邮箱", placeholder: "you@example.com" },
               { type: "password", key: "password", message: "登录密码" },
-              { type: "text", key: "name", message: "给它起个名字（留空就用邮箱）", placeholder: "可选" },
+              { type: "text", key: "name", message: "备注名（留空用邮箱）", placeholder: "可选" },
             ],
             async authorize(inputs = {}) {
               const site = siteRootOf(inputs.site)
@@ -638,17 +656,17 @@ export default {
           },
           {
             type: "api",
-            label: "sub2api 手动导入令牌（站点 + 登录令牌）",
+            label: "sub2api 登录令牌",
             prompts: [
               {
                 type: "text",
                 key: "site",
-                message: "站点地址（例如 https://example.com）",
+                message: "站点地址",
                 placeholder: "https://example.com",
-                validate: (v) => (siteRootOf(v) ? undefined : "这不像一个网址"),
+                validate: (v) => (siteRootOf(v) ? undefined : "请填完整网址，例如 https://example.com"),
               },
-              { type: "password", key: "token", message: "登录令牌（access token，可从浏览器开发者工具里复制）" },
-              { type: "text", key: "name", message: "给它起个名字（留空就用域名）", placeholder: "可选" },
+              { type: "password", key: "token", message: "登录令牌 access token（浏览器开发者工具里复制）" },
+              { type: "text", key: "name", message: "备注名（留空用域名）", placeholder: "可选" },
             ],
             async authorize(inputs = {}) {
               const site = siteRootOf(inputs.site)

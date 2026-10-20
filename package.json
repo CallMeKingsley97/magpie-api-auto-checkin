@@ -32,7 +32,7 @@
     "test": "node --test \"tests/*.test.mjs\""
   },
   "magpie": {
-    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjJhYTU1IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTggM2g4Ii8+PHBhdGggZD0iTTEyIDN2MyIvPjxwYXRoIGQ9Ik0xMiA2Yy0zLjMgMC02IDIuNy02IDZ2NWgxMlYxMmMwLTMuMy0yLjctNi02LTZ6Ii8+PHBhdGggZD0iTTE4IDE3djJhMiAyIDAgMCAxLTIgMkg4YTIgMiAwIDAgMS0yLTJ2LTIiLz48L3N2Zz4=",
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMTZhMzRhIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHJlY3QgeD0iMy41IiB5PSI0LjUiIHdpZHRoPSIxNyIgaGVpZ2h0PSIxNiIgcng9IjMiLz48cGF0aCBkPSJNOCAyLjV2NE0xNiAyLjV2NE0zLjUgOS41aDE3Ii8+PHBhdGggZD0ibTggMTQuOCAyLjYgMi42IDUuMi01LjQiLz48L3N2Zz4=",
     "maxConcurrency": 1
   }
 }

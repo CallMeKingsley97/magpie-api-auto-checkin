@@ -193,3 +193,102 @@ test("状态读取：额度字段解析正确", async () => {
 function todayBeijing() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
 }
+
+// ---- 分支站 -----------------------------------------------------------------
+//
+// 同一个家族，公开状态字段和签到路径会换名字。认错就会把签到发到不存在的
+// 接口上，或者把“管理员没开”误报成失败。
+
+test("Veloera：公开状态用 check_in_enabled，认出来的分支是 veloera", async () => {
+  const f = fakeFetch([
+    { match: (url) => url.endsWith("/api/status"), body: { success: true, data: { version: "1.0", check_in_enabled: true } } },
+  ])
+  const d = await detectSite(SITE, { fetchImpl: f })
+  assert.equal(d.kind, "new-api")
+  assert.equal(d.variant, "veloera")
+  assert.equal(d.checkinEnabled, true)
+})
+
+test("Veloera：签到走 /api/user/check_in，状态读 /api/user/check_in_status", async () => {
+  const f = fakeFetch([
+    { match: (url) => url.endsWith("/api/status"), body: { success: true, data: { check_in_enabled: true } } },
+    {
+      match: (url) => url.endsWith("/api/user/check_in_status"),
+      body: { success: true, data: { can_check_in: true } },
+    },
+    {
+      match: (url, init) => url.endsWith("/api/user/check_in") && init?.method === "POST",
+      body: { success: true, message: "签到成功", data: { quota: 500 } },
+    },
+  ])
+  const r = await checkinSite(SITE, { key: "nap_x" }, { fetchImpl: f })
+  assert.equal(r.outcome, "claimed")
+  assert.equal(r.credit, 500)
+  // 不能去碰官方那套接口
+  assert.equal(countCalls(f, "/api/user/checkin"), 0)
+})
+
+test("Veloera：can_check_in=false 就是今天已签，不再 POST", async () => {
+  const f = fakeFetch([
+    { match: (url) => url.endsWith("/api/status"), body: { success: true, data: { check_in_enabled: true } } },
+    { match: (url) => url.endsWith("/api/user/check_in_status"), body: { success: true, data: { can_check_in: false } } },
+  ])
+  const r = await checkinSite(SITE, { key: "nap_x" }, { fetchImpl: f })
+  assert.equal(r.outcome, "done")
+  // 只读了状态，没有 POST 签到（注意别把 check_in_status 也算进来）
+  assert.equal(f.calls.filter((c) => c.method === "POST").length, 0)
+})
+
+test("Veloera：check_in_enabled=false 是管理员关了", async () => {
+  const f = fakeFetch([
+    { match: (url) => url.endsWith("/api/status"), body: { success: true, data: { check_in_enabled: false } } },
+  ])
+  const r = await checkinSite(SITE, { key: "nap_x" }, { fetchImpl: f })
+  assert.equal(r.outcome, "inactive")
+  assert.match(r.message, /没有开启签到/)
+})
+
+test("Rix API 这类分支：enable_checkin 也算签到开关", async () => {
+  const f = fakeFetch([
+    { match: (url) => url.endsWith("/api/status"), body: { success: true, data: { version: "6.1.25", enable_checkin: true } } },
+  ])
+  const d = await detectSite(SITE, { fetchImpl: f })
+  assert.equal(d.kind, "new-api")
+  assert.equal(d.variant, "new-api")
+  assert.equal(d.checkinEnabled, true)
+})
+
+test("WONG 这类分支：状态接口用 checked_in 表示今天签过", async () => {
+  const f = fakeFetch([
+    { match: (url) => url.endsWith("/api/status"), body: { success: true, data: { checkin_enabled: true } } },
+    {
+      match: (url, init) => url.includes("/api/user/checkin?month=") && String(init?.method ?? "GET").toUpperCase() === "GET",
+      body: { success: true, message: "ok", data: { enabled: true, checked_in: true } },
+    },
+  ])
+  const st = await newApiStatus(SITE, "nap_x", { fetchImpl: f })
+  assert.equal(st.today, true)
+})
+
+test("签到失败文案看不懂，但回读状态已经签上 → 报 done，不制造假失败", async () => {
+  let reads = 0
+  const f = fakeFetch([
+    statusOn,
+    {
+      match: (url, init) => url.includes("/api/user/checkin?month=") && String(init?.method ?? "GET").toUpperCase() === "GET",
+      respond: () => {
+        const today = reads++ > 0
+        return {
+          body: {
+            success: true,
+            data: { enabled: true, stats: { checked_in_today: today, records: today ? [{ checkin_date: todayBeijing(), quota_awarded: 700 }] : [] } },
+          },
+        }
+      },
+    },
+    checkinPost({ status: 200, body: { success: false, message: "操作异常，请稍后再试" } }),
+  ])
+  const r = await checkinNewApi(SITE, "nap_token", { fetchImpl: f })
+  assert.equal(r.outcome, "done")
+  assert.equal(r.credit, 700)
+})
