@@ -1,504 +1,157 @@
-// sub2api 站点的登录与签到。
+// sub2api 额度读取。
 //
-// sub2api 有一堆分支站，签到接口各不一样；这里挑几家典型的覆盖：
-// Sub2API Pro / FreeAPI / ToolCode / Hiyo / 小白Code，以及登录、
-// 刷新、已签、管理员关闭、验证码、令牌过期几种结果。
+// sub2api 给两把不同的钥匙：
+//  - API 密钥（sk-…，providers.json 里那把）→ GET /v1/usage，答“这把 key 还剩多少”；
+//  - 登录令牌（邮箱密码登录拿到的 JWT）→ GET /api/v1/user/profile，答账号余额。
+// 两种回答都整理成 magpie 的额度结构。
 
-import test from "node:test"
+import test, { beforeEach } from "node:test"
 import assert from "node:assert/strict"
 
-import { checkinSite, detectSite, loginSub2Api, refreshSub2ApiAuth } from "../lib/checkin.mjs"
-import { fakeFetch, countCalls } from "./helpers.mjs"
+import { resetRateLimits } from "../lib/core.mjs"
+import { cardOfUsage, readSub2Api } from "../lib/sub2api.mjs"
+import { fakeFetch, countCalls, lastBody } from "./helpers.mjs"
 
-const SITE = "https://sub2.example.com"
+const SITE = "https://s2a.example.com"
 
-/** sub2api 的公开设置接口，用来认站点。 */
-const publicSettings = { match: (url) => url.includes("/api/v1/settings/public"), body: { code: 0, message: "ok", data: { site_name: "某个中转站" } } }
+beforeEach(() => resetRateLimits())
 
-const envelope = (data, extra = {}) => ({ code: 0, message: "ok", data, ...extra })
-
-test("认站点：/api/v1/settings/public 答了就是 sub2api", async () => {
-  const f = fakeFetch([publicSettings])
-  const d = await detectSite(SITE, { fetchImpl: f })
-  assert.equal(d.kind, "sub2api")
-})
-
-test("登录：拿到 access/refresh，账号名用邮箱", async () => {
+test("sub2api：钱包余额模式只给余额，不给假窗口", async () => {
   const f = fakeFetch([
-    publicSettings,
     {
-      match: (url, init) => url.endsWith("/api/v1/auth/login") && init?.method === "POST",
-      body: envelope({
-        access_token: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x",
-        refresh_token: "rt-123",
-        expires_in: 3600,
-        user: { id: 42, email: "me@example.com" },
-      }),
+      match: (url) => url.endsWith("/v1/usage"),
+      body: { mode: "unrestricted", isValid: true, planName: "钱包余额", remaining: 6.71, unit: "USD", balance: 6.71 },
     },
   ])
-  const t = await loginSub2Api(SITE, { email: "me@example.com", password: "pw" }, { fetchImpl: f })
-  assert.equal(t.access.startsWith("eyJ"), true)
-  assert.equal(t.refresh, "rt-123")
-  assert.equal(t.accountId, "me@example.com")
-  assert.equal(t.uid, "42")
-  assert.ok(t.expires > Date.now() + 3500 * 1000)
+  const card = await readSub2Api(SITE, { key: "sk-abc" }, { fetchImpl: f })
+  assert.equal(card.balance, "$6.71")
+  assert.equal(card.windows, undefined)
+  // sub2api 自己的占位名“钱包余额”不当套餐名：有它会挡住 magpie 的余额卡排版
+  assert.equal(card.plan, undefined)
+  assert.match(f.calls[0].headers.Authorization, /^Bearer sk-abc$/)
 })
 
-test("登录：要人机验证（Turnstile）时明确说清，不尝试破解", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.endsWith("/api/v1/auth/login"), status: 400, body: { code: 4001, message: "Turnstile verification required" } },
-  ])
-  await assert.rejects(
-    () => loginSub2Api(SITE, { email: "me@example.com", password: "pw" }, { fetchImpl: f }),
-    (e) => {
-      assert.match(e.message, /人机验证|Turnstile/i)
-      return true
+test("sub2api：quota_limited 模式给总额度和速率窗口", () => {
+  const card = cardOfUsage({
+    mode: "quota_limited",
+    isValid: true,
+    quota: { limit: 10, used: 2.5, remaining: 7.5, unit: "USD" },
+    remaining: 7.5,
+    unit: "USD",
+    rate_limits: [
+      { window: "5h", limit: 2, used: 0.5, remaining: 1.5, window_start: "2026-10-24T00:00:00Z", reset_at: "2026-10-24T05:00:00Z" },
+      { window: "7d", limit: 20, used: 5, remaining: 15, reset_at: "2026-10-31T00:00:00Z" },
+    ],
+    expires_at: "2026-12-01T00:00:00Z",
+  })
+  assert.equal(card.balance, "$7.5")
+  assert.equal(card.windows.length, 3)
+  const [total, five, week] = card.windows
+  assert.equal(total.name, "额度")
+  assert.equal(total.used, 25)
+  assert.equal(total.display, "$2.5 / $10")
+  assert.equal(five.name, "5 小时")
+  assert.equal(five.used, 25)
+  assert.equal(five.resetsAt, "2026-10-24T05:00:00.000Z")
+  assert.equal(week.name, "7 天")
+  assert.equal(week.used, 25)
+  assert.equal(card.until, "2026-12-01T00:00:00.000Z")
+})
+
+test("sub2api：订阅模式按日/周/月限度画窗口，套餐名照实给", () => {
+  const card = cardOfUsage({
+    mode: "unrestricted",
+    isValid: true,
+    planName: "Pro",
+    remaining: 3,
+    unit: "USD",
+    subscription: {
+      daily_usage_usd: 1,
+      daily_limit_usd: 2,
+      weekly_usage_usd: 4,
+      weekly_limit_usd: 20,
+      monthly_usage_usd: 30,
+      monthly_limit_usd: 100,
+      expires_at: "2026-11-20T00:00:00Z",
     },
-  )
+  })
+  assert.equal(card.plan, "Pro")
+  assert.equal(card.windows.length, 3)
+  assert.deepEqual(card.windows.map((w) => w.name), ["每天", "每周", "每月"])
+  assert.equal(card.windows[0].used, 50)
+  assert.equal(card.until, "2026-11-20T00:00:00.000Z")
 })
 
-test("Sub2API Pro：读状态 + 签到成功 + 拿回奖励", async () => {
+test("sub2api：限为 0 或读数缺失的窗口跳过，不画 0/0", () => {
+  const card = cardOfUsage({
+    quota: { limit: 0, used: 0, remaining: 0 },
+    rate_limits: [{ window: "5h", limit: 0, used: 0 }, { window: "1d", limit: 5 }],
+  })
+  assert.equal(card.windows, undefined)
+  assert.equal(card.balance, undefined)
+})
+
+test("sub2api：API 密钥被拒时说清用哪种密钥", async () => {
+  const f = fakeFetch([{ match: (url) => url.endsWith("/v1/usage"), status: 401, body: { error: "Invalid API key" } }])
+  const card = await readSub2Api(SITE, { key: "sk-bad" }, { fetchImpl: f })
+  assert.match(card.error, /sk-/)
+  assert.equal(card.balance, undefined)
+})
+
+test("sub2api：登录令牌走 /api/v1/user/profile，读出余额", async () => {
+  const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.sig"
   const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/redeem/checkin/status"), body: envelope({ enabled: true, checked_in_today: false, reward_min: 1, reward_max: 5 }) },
-    { match: (url, init) => url.endsWith("/api/v1/redeem/checkin") && init?.method === "POST", body: envelope({ amount: 3.5, total_reward: 12 }) },
+    { match: (url) => url.endsWith("/api/v1/user/profile"), body: { code: 0, data: { email: "a@b.c", balance: 13.43 } } },
   ])
-  const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "claimed")
-  assert.equal(r.credit, 3.5)
-  assert.match(r.message, /3\.5/)
+  const card = await readSub2Api(SITE, { access: jwt, expires: 2_000_000_000_000 }, { fetchImpl: f })
+  assert.equal(card.balance, "$13.43")
+  assert.equal(countCalls(f, "/v1/usage"), 0, "登录令牌不是网关密钥，不该去敲 /v1/usage")
 })
 
-test("Sub2API Pro：今天已经签过 → done", async () => {
+test("sub2api：登录令牌过期时用 refresh_token 续期，并把新令牌交回去保存", async () => {
+  const oldJwt = "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE2MDAwMDAwMDB9.sig"
+  let saved
   const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/redeem/checkin/status"), body: envelope({ enabled: true, checked_in_today: true, reward_min: 1, reward_max: 5 }) },
-  ])
-  const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "done")
-})
-
-test("Sub2API Pro：管理员关了签到 → inactive（按 reason 认出来）", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/redeem/checkin/status"), body: envelope({ enabled: false, checked_in_today: false, unavailable_reason: "DAILY_CHECKIN_DISABLED" }) },
-  ])
-  const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "inactive")
-  assert.match(r.message, /没有开启签到/)
-})
-
-test("Sub2API Pro：POST 回 409 DAILY_CHECKIN_ALREADY_DONE → done", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/redeem/checkin/status"), body: envelope({ enabled: true, checked_in_today: false }) },
-    {
-      match: (url, init) => url.endsWith("/api/v1/redeem/checkin") && init?.method === "POST",
-      status: 409,
-      body: { code: 4090, message: "already checked in", reason: "DAILY_CHECKIN_ALREADY_DONE" },
-    },
-  ])
-  const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "done")
-})
-
-test("FreeAPI：状态接口 + 签到 POST", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url, init) => url.includes("/api/v1/user/checkin?timezone=") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      body: envelope({ enabled: true, checked_in_today: false, min_amount: 10, max_amount: 20 }),
-    },
-    {
-      match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST",
-      body: envelope({ amount: 15 }),
-    },
-  ])
-  const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "claimed")
-  assert.equal(r.credit, 15)
-  // 时区跟着站点前端只加在 GET 上；POST 用站点原生的干净路径
-  const get = f.calls.find((c) => c.method === "GET" && c.path.startsWith("/api/v1/user/checkin"))
-  assert.match(decodeURIComponent(get.url), /timezone=Asia\/Shanghai/)
-  const post = f.calls.find((c) => c.method === "POST")
-  assert.equal(post.path, "/api/v1/user/checkin")
-})
-
-test("Hiyo：daily_claimed 已签 → done，不重复 claim", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/checkin?timezone="), body: envelope({ enabled: true, daily_claimed: true, daily_available: true, can_claim: false }) },
-  ])
-  const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "done")
-  assert.equal(countCalls(f, "/api/v1/checkin") , 1)
-})
-
-test("Hiyo：门槛没达到（tokens_met=false）→ ineligible", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/checkin?timezone="), body: envelope({ enabled: true, daily_claimed: false, can_claim: false, tokens_met: false }) },
-  ])
-  const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "ineligible")
-})
-
-test("ToolCode：engagement 状态 + 签到拿积分", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url, init) => url.includes("/api/v1/engagement/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      body: envelope({ checkin_enabled: true, checked_in_today: false, can_checkin: true }),
-    },
-    { match: (url, init) => url.endsWith("/api/v1/engagement/checkin") && init?.method === "POST", body: envelope({ points_reward: 5, total_points: 120 }) },
-  ])
-  const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "claimed")
-  assert.equal(r.credit, 5)
-})
-
-test("ToolCode：POST 409 CHECKIN_ALREADY_COMPLETED → done", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url, init) => url.includes("/api/v1/engagement/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      body: envelope({ checkin_enabled: true, checked_in_today: false, can_checkin: true }),
-    },
-    { match: (url, init) => url.endsWith("/api/v1/engagement/checkin") && init?.method === "POST", status: 409, body: { code: 409, message: "done", reason: "CHECKIN_ALREADY_COMPLETED" } },
-  ])
-  const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "done")
-})
-
-test("小白Code：/checkin/api 这套接口", async () => {
-  const f = fakeFetch([
-    { match: (url, init) => url.endsWith("/checkin/api/status") && String(init?.method ?? "GET").toUpperCase() === "GET", body: { ok: true, data: { signedToday: false, config: { enabled: true } } } },
-    { match: (url, init) => url.endsWith("/checkin/api/checkin") && init?.method === "POST", body: { ok: true, data: { alreadyChecked: false, record: { reward_amount: 8 } } } },
-  ])
-  // 小白Code 没有 /api/v1/settings/public，走签到接口自身认站
-  const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "claimed")
-  assert.equal(r.credit, 8)
-})
-
-test("小白Code：管理员关了 → inactive", async () => {
-  const f = fakeFetch([{ match: (url) => url.endsWith("/checkin/api/status"), body: { ok: true, data: { signedToday: false, config: { enabled: false } } } }])
-  const r = await checkinSite(SITE, { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.x", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "inactive")
-})
-
-test("sub2api：认不出的站点，如实说“没适配”", async () => {
-  const f = fakeFetch([{ match: () => true, status: 404, text: "not found" }])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "inactive")
-  assert.match(r.message, /没适配/)
-})
-
-test("sub2api：令牌过期但刷新成功，签到照样完成（并保存新令牌）", async () => {
-  const saved = []
-  const f = fakeFetch([
-    publicSettings,
     {
       match: (url) => url.endsWith("/api/v1/auth/refresh"),
-      body: envelope({ access_token: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.y", refresh_token: "rt-2" }),
+      body: { code: 0, data: { access_token: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.new", refresh_token: "r2" } },
     },
-    { match: (url) => url.includes("/api/v1/redeem/checkin/status"), body: envelope({ enabled: true, checked_in_today: false }) },
-    { match: (url, init) => url.endsWith("/api/v1/redeem/checkin") && init?.method === "POST", body: envelope({ amount: 2 }) },
+    { match: (url) => url.endsWith("/api/v1/user/profile"), body: { code: 0, data: { balance: 1.5 } } },
   ])
-  const r = await checkinSite(
+  const card = await readSub2Api(
     SITE,
-    { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjEwMDAwMDAwMDB9.x", refresh: "rt-1", expires: 1_000_000_000_000, site: SITE },
-    { fetchImpl: f, save: async (a) => saved.push(a) },
+    { access: oldJwt, refresh: "r1", expires: 1_600_000_000_000, site: SITE },
+    { fetchImpl: f, save: (c) => (saved = c) },
   )
-  assert.equal(r.outcome, "claimed")
-  assert.equal(saved.length, 1)
-  assert.equal(saved[0].refresh, "rt-2")
-  assert.match(saved[0].access, /\.y$/)
+  assert.equal(card.balance, "$1.5")
+  assert.equal(card.signIn, "renewed")
+  assert.equal(lastBody(f, "/api/v1/auth/refresh").refresh_token, "r1")
+  assert.equal(saved.access, "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjIwMDAwMDAwMDB9.new")
+  assert.equal(saved.refresh, "r2")
 })
 
-test("sub2api：刷新被拒（登录态失效）→ failed，提示重新登录", async () => {
+test("sub2api：续期也失败时标成要重新登录，不再继续读", async () => {
   const f = fakeFetch([
-    publicSettings,
     { match: (url) => url.endsWith("/api/v1/auth/refresh"), status: 401, body: { code: 401, message: "invalid refresh token" } },
   ])
-  const r = await checkinSite(
+  const card = await readSub2Api(
     SITE,
-    { access: "old", refresh: "rt-1", expires: 1_000_000_000_000, site: SITE },
+    { access: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE2MDAwMDAwMDB9.x", refresh: "r1", expires: 1_600_000_000_000, site: SITE },
     { fetchImpl: f },
   )
-  assert.equal(r.outcome, "failed")
-  assert.match(r.message, /重新登录|失效/)
+  assert.equal(card.signIn, "expired")
+  assert.match(card.error, /登录态失效/)
+  assert.equal(countCalls(f, "/api/v1/user/profile"), 0)
 })
 
-test("sub2api：没登录态的账号，直接说清要重新登录", async () => {
-  const f = fakeFetch([publicSettings])
-  const r = await checkinSite(SITE, { site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "failed")
-  assert.match(r.message, /登录/)
-})
-
-test("刷新：令牌还早，不发刷新请求", async () => {
-  const f = fakeFetch([{ match: () => true, status: 500, text: "不该被调用" }])
-  const auth = { access: "a", refresh: "r", expires: Date.now() + 60 * 60 * 1000, site: SITE }
-  const { renewed } = await refreshSub2ApiAuth(auth, { fetchImpl: f })
-  assert.equal(renewed, false)
-  assert.equal(f.calls.length, 0)
-})
-
-// ---- 共用的 /api/v1/user/checkin/status 路径 ----------------------------------
-//
-// Genius Programmer 和 Clawhud 读同一个路径，只有字段名不同。认错了就会把
-// A 家的签到发到 B 家的接口上，所以这两条必须分开认。
-
-test("Genius / Clawhud 共用状态路径：today_checked_in 归 Genius", async () => {
+test("sub2api：续期本身遇到限流时报限流，不把账号误标成登录失效", async () => {
+  const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE2MDAwMDAwMDB9.sig"
   const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url, init) => url.includes("/api/v1/user/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      body: envelope({ enabled: true, today_checked_in: false, recent_records: [] }),
-    },
-    { match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST", body: envelope({ new_reward: true, reward_amount: 2.5 }) },
+    { match: (url) => url.endsWith("/api/v1/auth/refresh"), status: 429, headers: { "Retry-After": "60" }, body: {} },
+    { match: (url) => url.endsWith("/api/v1/user/profile"), body: { code: 0, data: { balance: 2 } } },
   ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "claimed")
-  assert.equal(r.credit, 2.5)
-})
-
-test("Genius / Clawhud 共用状态路径：checked_in_today + total_count 归 Clawhud", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url, init) => url.includes("/api/v1/user/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      body: envelope({ enabled: true, checked_in_today: false, total_count: 9, total_amount: 30 }),
-    },
-    { match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST", body: envelope({ checked_in_today: true, today_amount: 0.8 }) },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "claimed")
-  assert.equal(r.credit, 0.8)
-})
-
-test("Clawhud：重复签到回 409 + CHECKIN_ALREADY_DONE → done（不靠文案）", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url, init) => url.includes("/api/v1/user/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      body: envelope({ enabled: true, checked_in_today: false, total_count: 9, total_amount: 30 }),
-    },
-    {
-      match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST",
-      status: 409,
-      body: { code: 409, message: "duplicate", reason: "CHECKIN_ALREADY_DONE" },
-    },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "done")
-})
-
-test("Genius：new_reward=false 的成功回包也算“今天已签”，不重复算奖励", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url, init) => url.includes("/api/v1/user/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      body: envelope({ enabled: true, today_checked_in: false, recent_records: [] }),
-    },
-    { match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST", body: envelope({ new_reward: false }) },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "done")
-})
-
-// ---- Daigua / Sidrune ------------------------------------------------------
-
-test("Daigua：admin_disabled 是管理员关了，不是“今天签过”", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url) => url.includes("/api/v1/checkin/status"),
-      body: envelope({ enabled: false, can_checkin: false, luck_enabled: false, unavailable_reason: "admin_disabled" }),
-    },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "inactive")
-  assert.match(r.message, /没有开启签到/)
-})
-
-test("Daigua：签到成功，POST 发空对象（原生页面就是空 body）", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/checkin/status"), body: envelope({ enabled: true, can_checkin: true, luck_enabled: false }) },
-    { match: (url, init) => url.endsWith("/api/v1/checkin") && init?.method === "POST", body: envelope({ checkin_type: "normal", reward_amount: 1.2 }) },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "claimed")
-  assert.equal(r.credit, 1.2)
-  const post = f.calls.find((c) => c.method === "POST" && c.path === "/api/v1/checkin")
-  assert.equal(post.body, "{}")
-})
-
-test("Sidrune：eligible=false 是没资格，不是签到关了", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/welfare/profile"), body: envelope({ enabled: true, eligible: false, checked_in_today: false }) },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "ineligible")
-})
-
-test("Sidrune：站点级开关关了优先报“管理员关了”，不往资格上猜", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/welfare/profile"), body: envelope({ enabled: false, eligible: false, checked_in_today: false }) },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "inactive")
-  assert.match(r.message, /没有开启签到/)
-})
-
-test("Sidrune：签到带上连续天数和里程碑奖励", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/welfare/profile"), body: envelope({ enabled: true, eligible: true, checked_in_today: false }) },
-    { match: (url, init) => url.endsWith("/api/v1/welfare/checkin") && init?.method === "POST", body: envelope({ reward_amount: 0.5, milestone_bonus: 1, streak_day: 7 }) },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "claimed")
-  assert.equal(r.credit, 0.5)
-  assert.equal(r.streak, 7)
-})
-
-// ---- 两套独立协议 -----------------------------------------------------------
-
-test("Denxio：begin → 等待 → claim 两段式签到", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/tbe-sponsor-checkin/status"), body: envelope({ normal_done: false, config: { normal_checkin_enabled: true } }) },
-    {
-      match: (url, init) => url.includes("/api/v1/tbe-sponsor-checkin/normal/begin") && init?.method === "POST",
-      body: envelope({ token: "challenge-1", wait_seconds: 0 }),
-    },
-    {
-      match: (url, init) => url.endsWith("/api/v1/tbe-sponsor-checkin/normal/claim") && init?.method === "POST",
-      body: envelope({ record: { amount: 0.3 } }),
-    },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "claimed")
-  assert.equal(r.credit, 0.3)
-  const claim = f.calls.find((c) => c.path.endsWith("/normal/claim"))
-  assert.equal(JSON.parse(claim.body).token, "challenge-1")
-})
-
-test("Denxio：重复领取的 reason 码 → done", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/tbe-sponsor-checkin/status"), body: envelope({ normal_done: false, config: { normal_checkin_enabled: true } }) },
-    { match: (url, init) => url.includes("/normal/begin") && init?.method === "POST", body: envelope({ token: "c1", wait_seconds: 0 }) },
-    {
-      match: (url, init) => url.endsWith("/normal/claim") && init?.method === "POST",
-      status: 409,
-      body: { code: 409, message: "done", reason: "TBE_SPONSOR_CHECKIN_ALREADY_DONE" },
-    },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "done")
-})
-
-test("Denxio：管理员关掉（normal_checkin_enabled=false）→ inactive", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    { match: (url) => url.includes("/api/v1/tbe-sponsor-checkin/status"), body: envelope({ normal_done: false, config: { normal_checkin_enabled: false } }) },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "inactive")
-})
-
-test("AI-ROUTER：/api/v1/user/daily-checkin 一条路径读和领", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url, init) => url.includes("/api/v1/user/daily-checkin") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      body: envelope({ enabled: true, checked_today: false, eligible: true }),
-    },
-    {
-      match: (url, init) => url.endsWith("/api/v1/user/daily-checkin") && init?.method === "POST",
-      body: envelope({ checked_today: true, reward_amount: 0.05 }),
-    },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "claimed")
-  assert.equal(r.credit, 0.05)
-})
-
-test("AI-ROUTER：没资格（eligible=false）就不发领取请求", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url, init) => url.includes("/api/v1/user/daily-checkin") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      body: envelope({ enabled: true, checked_today: false, eligible: false }),
-    },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  // 站点开着签到，但账号没到门槛：这是“没资格”，不是“管理员关了”
-  assert.equal(r.outcome, "ineligible")
-  assert.equal(countCalls(f, "/api/v1/user/daily-checkin"), 1)
-})
-
-test("AI-ROUTER：重复领取 409 DAILY_CHECKIN_CLAIMED → done", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url, init) => url.includes("/api/v1/user/daily-checkin") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      body: envelope({ enabled: true, checked_today: false, eligible: true }),
-    },
-    {
-      match: (url, init) => url.endsWith("/api/v1/user/daily-checkin") && init?.method === "POST",
-      status: 409,
-      body: { code: 409, message: "claimed", reason: "DAILY_CHECKIN_CLAIMED" },
-    },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "done")
-})
-
-// ---- 失败后回读 -------------------------------------------------------------
-
-test("签到 POST 回了个看不懂的错误，但回读状态已经签上了 → 如实报 done", async () => {
-  let statusCalls = 0
-  const f = fakeFetch([
-    publicSettings,
-    {
-      // 第一次读：没签；POST 之后再读：已签
-      match: (url, init) => url.includes("/api/v1/redeem/checkin/status") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      respond: () => ({
-        body: envelope({ enabled: true, checked_in_today: statusCalls++ > 0, reward_min: 1, reward_max: 2 }),
-      }),
-    },
-    {
-      match: (url, init) => url.endsWith("/api/v1/redeem/checkin") && init?.method === "POST",
-      status: 502,
-      text: "<html>bad gateway</html>",
-    },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "done")
-})
-
-test("FreeAPI 这类分支：HTTP 200 但 code 是字符串 UNAUTHORIZED → 按失败处理", async () => {
-  const f = fakeFetch([
-    publicSettings,
-    {
-      match: (url, init) => url.includes("/api/v1/user/checkin?timezone=") && String(init?.method ?? "GET").toUpperCase() === "GET",
-      body: envelope({ enabled: true, checked_in_today: false, min_amount: 1, max_amount: 2 }),
-    },
-    {
-      match: (url, init) => url.endsWith("/api/v1/user/checkin") && init?.method === "POST",
-      // 传输级失败时站点把 code 换成字符串，HTTP 仍是 200
-      body: { code: "UNAUTHORIZED", message: "未登录", reason: "UNAUTHORIZED" },
-    },
-  ])
-  const r = await checkinSite(SITE, { access: "tok", site: SITE }, { fetchImpl: f })
-  assert.equal(r.outcome, "failed")
-  assert.match(r.message, /登录态|未登录/)
+  const card = await readSub2Api(SITE, { access: jwt, refresh: "r1", expires: 1_600_000_000_000, site: SITE }, { fetchImpl: f })
+  // 429 记进退避，后面的请求被挡下：卡片说限流（而不是“登录失效”）
+  assert.match(card.error, /限流/)
+  assert.equal(card.signIn, undefined)
 })

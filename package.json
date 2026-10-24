@@ -1,7 +1,7 @@
 {
-  "name": "magpie-api-auto-checkin",
+  "name": "magpie-quota-manager",
   "version": "0.1.0",
-  "description": "签到管家（Auto Check-in）：把 magpie 里每一个 new-api / sub2api 中转站都签一遍，签到不了的站点逐条说明原因",
+  "description": "额度管家（Quota Manager）：把 magpie 里配好的 new-api / sub2api 中转站额度读进 Usage 卡片——额度窗口、余额、到期时间都用 magpie 自己的结构化字段",
   "type": "module",
   "main": "./index.mjs",
   "files": [
@@ -9,6 +9,7 @@
     "lib",
     "tests",
     "README.md",
+    "ROADMAP.md",
     "LICENSE"
   ],
   "keywords": [
@@ -18,21 +19,22 @@
     "magpie-plugin",
     "auth",
     "provider",
-    "checkin",
-    "签到",
+    "usage",
+    "quota",
+    "额度",
     "new-api",
     "sub2api"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/CallMeKingsley97/magpie-api-auto-checkin"
+    "url": "https://github.com/CallMeKingsley97/magpie-quota-manager"
   },
   "scripts": {
     "test": "node --test \"tests/*.test.mjs\""
   },
   "magpie": {
-    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMTZhMzRhIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHJlY3QgeD0iMy41IiB5PSI0LjUiIHdpZHRoPSIxNyIgaGVpZ2h0PSIxNiIgcng9IjMiLz48cGF0aCBkPSJNOCAyLjV2NE0xNiAyLjV2NE0zLjUgOS41aDE3Ii8+PHBhdGggZD0ibTggMTQuOCAyLjYgMi42IDUuMi01LjQiLz48L3N2Zz4=",
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMTZhMzRhIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTMuNSAxOGE4LjUgOC41IDAgMSAxIDE3IDAiLz48cGF0aCBkPSJtMTIgMTUgNC4yLTQuMiIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTUiIHI9IjEuMyIgZmlsbD0iIzE2YTM0YSIgc3Ryb2tlPSJub25lIi8+PHBhdGggZD0iTTQuNSAxNGgyTTE3LjUgMTRoMk02LjYgOC42bDEuNCAxLjRNMTcuNCA4LjYgMTYgMTAiLz48L3N2Zz4=",
     "maxConcurrency": 1
   }
 }
